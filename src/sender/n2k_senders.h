@@ -69,14 +69,16 @@ class N2kWindDataSender
     }
   }
 
+  // wind_angle_ and wind_speed_ depend on repeat_interval_ and expiry_
+  // for initialization, but those are public API so we keep them all public.
+  unsigned int repeat_interval_;
+  unsigned int expiry_;
+
   sensesp::RepeatExpiring<double> wind_angle_{repeat_interval_, expiry_};
   sensesp::RepeatExpiring<double> wind_speed_{repeat_interval_, expiry_};
 
  protected:
-  unsigned int repeat_interval_;
-  unsigned int expiry_;
   tNMEA2000* nmea2000_;
-
   tN2kWindReference wind_reference_;
 };
 

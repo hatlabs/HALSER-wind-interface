@@ -1,23 +1,24 @@
+// HALSER Wind Interface Firmware
+// Autonnic A5120 wind instrument to NMEA 2000 gateway
+
 #include <Adafruit_NeoPixel.h>
 #include <NMEA2000_esp32.h>
+
+#include <memory>
 
 #include "Wire.h"
 #include "autonnic_a5120_parser.h"
 #include "autonnic_config.h"
 #include "elapsedMillis.h"
 #include "sender/n2k_senders.h"
+#include "sensesp/system/lambda_consumer.h"
 #include "sensesp/system/serial_number.h"
-#include "sensesp/system/stream_producer.h"
-#include "sensesp/transforms/filter.h"
-#include "sensesp/transforms/typecast.h"
-#include "sensesp/transforms/zip.h"
 #include "sensesp/ui/config_item.h"
 #include "sensesp/ui/status_page_item.h"
 #include "sensesp/ui/ui_controls.h"
 #include "sensesp_app_builder.h"
-#include "sensesp_nmea0183/data/wind_data.h"
+#include "sensesp_nmea0183/nmea0183.h"
 #include "sensesp_nmea0183/sentence_parser/wind_sentence_parser.h"
-#include "sensesp_nmea0183/wiring.h"
 #include "ssd1306_display.h"
 
 using namespace sensesp;
@@ -46,7 +47,7 @@ elapsedMillis n2k_time_since_tx = 0;
 
 void setup() {
   Serial.setTxTimeoutMs(0);
-  SetupLogging();
+  SetupLogging(ESP_LOG_DEBUG);
 
   Wire.setPins(kI2CSDAPin, kI2CSCLPin);
   Wire.begin();
@@ -55,29 +56,32 @@ void setup() {
 
   // SensESP application
   SensESPAppBuilder builder;
-  auto sensesp_app = (&builder)
-                         ->set_hostname("wind")
-                         ->set_button_pin(kButtonPin)
-                         ->enable_ota("thisisfine")
-                         ->get_app();
+  sensesp_app = (&builder)
+                    ->set_hostname("wind")
+                    ->set_button_pin(kButtonPin)
+                    ->enable_ota("thisisfine")
+                    ->get_app();
 
   // RGB LED for activity indication
   led = new Adafruit_NeoPixel(1, kRGBLEDPin, NEO_GRB + NEO_KHZ800);
   led->begin();
   led->setBrightness(30);
 
-  NMEA0183IOTask* nmea0183_io_task = new NMEA0183IOTask(&Serial1);
+  // NMEA 0183 I/O task
+  auto nmea0183_io_task = std::make_shared<NMEA0183IOTask>(&Serial1);
 
-  ApparentWindData* apparent_wind_data = new ApparentWindData();
+  // Wind sentence parser — connected directly to parser, no TaskQueueProducer
+  // (ESP32-C3 is single-core, so cross-task bridging is unnecessary)
+  auto wind_parser =
+      std::make_shared<WIMWVSentenceParser>(&(nmea0183_io_task->parser_));
 
-  ConnectApparentWind(&(nmea0183_io_task->parser_), apparent_wind_data);
+  // Autonnic response parser for configuration commands
+  auto autonnic_response_parser =
+      std::make_shared<AutonnicPATCWIMWVParser>(&(nmea0183_io_task->parser_));
 
-  // Connect the response parser
-  AutonnicPATCWIMWVParser* autonnic_response_parser =
-      new AutonnicPATCWIMWVParser(&(nmea0183_io_task->parser_));
-
-  ReferenceAngleConfig* reference_angle_config = new ReferenceAngleConfig(
-      nmea0183_io_task, 0, autonnic_response_parser, "/Wind/Reference Angle");
+  auto reference_angle_config = std::make_shared<ReferenceAngleConfig>(
+      nmea0183_io_task.get(), 0, autonnic_response_parser.get(),
+      "/Wind/Reference Angle");
 
   ConfigItem(reference_angle_config)
       ->set_title("Reference Angle")
@@ -87,10 +91,10 @@ void setup() {
           "straight ahead.")
       ->set_sort_order(300);
 
-  WindDirectionDampingConfig* wind_direction_damping_config =
-      new WindDirectionDampingConfig(nmea0183_io_task, 50.0,
-                                     autonnic_response_parser,
-                                     "/Wind/Direction Damping");
+  auto wind_direction_damping_config =
+      std::make_shared<WindDirectionDampingConfig>(
+          nmea0183_io_task.get(), 50.0, autonnic_response_parser.get(),
+          "/Wind/Direction Damping");
 
   ConfigItem(wind_direction_damping_config)
       ->set_title("Wind Direction Damping")
@@ -99,20 +103,19 @@ void setup() {
           "50.0.")
       ->set_sort_order(400);
 
-  WindSpeedDampingConfig* wind_speed_damping_config =
-      new WindSpeedDampingConfig(nmea0183_io_task, 50.0,
-                                 autonnic_response_parser,
-                                 "/Wind/Speed Damping");
+  auto wind_speed_damping_config = std::make_shared<WindSpeedDampingConfig>(
+      nmea0183_io_task.get(), 50.0, autonnic_response_parser.get(),
+      "/Wind/Speed Damping");
 
   ConfigItem(wind_speed_damping_config)
       ->set_title("Wind Speed Damping")
       ->set_description("Wind speed damping factor (0-100.0). Default is 50.0.")
       ->set_sort_order(500);
 
-  WindOutputRepetitionRateConfig* wind_output_repetition_rate_config =
-      new WindOutputRepetitionRateConfig(nmea0183_io_task, 500,
-                                         autonnic_response_parser,
-                                         "/Wind/Message Repetition Rate");
+  auto wind_output_repetition_rate_config =
+      std::make_shared<WindOutputRepetitionRateConfig>(
+          nmea0183_io_task.get(), 500, autonnic_response_parser.get(),
+          "/Wind/Message Repetition Rate");
 
   ConfigItem(wind_output_repetition_rate_config)
       ->set_title("Message Repetition Rate")
@@ -126,7 +129,6 @@ void setup() {
 
   tNMEA2000* nmea2000 = new tNMEA2000_esp32(kCANTxPin, kCANRxPin);
 
-  // Reserve enough buffer for sending all messages.
   nmea2000->SetN2kCANSendFrameBufSize(250);
   nmea2000->SetN2kCANReceiveFrameBufSize(250);
 
@@ -155,39 +157,40 @@ void setup() {
   event_loop()->onRepeat(1, [nmea2000]() { nmea2000->ParseMessages(); });
 
   /////////////////////////////////////////////////////////////////////
-  // Initialize NMEA 2000 wind data sender
+  // NMEA 2000 wind data sender
 
-  N2kWindDataSender* wind_data_sender = new N2kWindDataSender(
+  auto wind_data_sender = std::make_shared<N2kWindDataSender>(
       "/Wind/NMEA2000", tN2kWindReference::N2kWind_Apparent, nmea2000, true);
 
-  apparent_wind_data->speed.connect_to(&(wind_data_sender->wind_speed_));
+  // Wire wind parser outputs directly to N2K sender
+  wind_parser->apparent_wind_speed_.connect_to(&(wind_data_sender->wind_speed_));
+  wind_parser->apparent_wind_angle_.connect_to(&(wind_data_sender->wind_angle_));
 
-  apparent_wind_data->angle.connect_to(&(wind_data_sender->wind_angle_));
-
-  wind_data_sender->connect_to(new LambdaConsumer<std::pair<double, double>>(
-      [](std::pair<double, double> wind_data) {
-        n2k_tx_counter = n2k_tx_counter.get() + 1;
-        n2k_time_since_tx = 0;
-      }));
+  wind_data_sender->connect_to(
+      std::make_shared<LambdaConsumer<std::pair<double, double>>>(
+          [](std::pair<double, double>) {
+            n2k_tx_counter = n2k_tx_counter.get() + 1;
+            n2k_time_since_tx = 0;
+          }));
 
   /////////////////////////////////////////////////////////////////////
-  // Initialize the Signal K wind data sender
+  // Signal K outputs
 
-  auto apparent_wind_speed_sk_output = new SKOutputFloat(
-      "/SK Path/Apparent Wind Speed", "environment.wind.speedApparent",
-      new SKMetadata("Apparent Wind Speed", "m/s"));
+  auto wind_speed_sk = std::make_shared<SKOutputFloat>(
+      "environment.wind.speedApparent", "/SK Path/Apparent Wind Speed",
+      new SKMetadata("m/s", "Apparent Wind Speed"));
 
-  auto apparent_wind_angle_sk_output = new SKOutputFloat(
-      "/SK Path/Apparent Wind Angle", "environment.wind.angleApparent",
-      new SKMetadata("Apparent Wind Angle", "rad"));
+  auto wind_angle_sk = std::make_shared<SKOutputFloat>(
+      "environment.wind.angleApparent", "/SK Path/Apparent Wind Angle",
+      new SKMetadata("rad", "Apparent Wind Angle"));
 
-  apparent_wind_data->speed.connect_to(apparent_wind_speed_sk_output);
-  apparent_wind_data->angle.connect_to(apparent_wind_angle_sk_output);
+  wind_parser->apparent_wind_speed_.connect_to(wind_speed_sk);
+  wind_parser->apparent_wind_angle_.connect_to(wind_angle_sk);
 
   /////////////////////////////////////////////////////////////////////
   // Configuration elements
 
-  CheckboxConfig* enable_n2k_watchdog_config = new CheckboxConfig(
+  auto enable_n2k_watchdog_config = std::make_shared<CheckboxConfig>(
       false, "Enable NMEA 2000 Watchdog", "/NMEA2000/Enable Watchdog");
 
   ConfigItem(enable_n2k_watchdog_config)
@@ -208,34 +211,33 @@ void setup() {
     });
   }
 
-  auto n2k_rx_ui_output = new StatusPageItem<int>("NMEA 2000 Received Messages",
-                                                  0, "NMEA 2000", 300);
+  auto n2k_rx_ui_output = std::make_shared<StatusPageItem<int>>(
+      "NMEA 2000 Received Messages", 0, "NMEA 2000", 300);
 
   n2k_rx_counter.connect_to(n2k_rx_ui_output);
 
-  auto n2k_tx_ui_output = new StatusPageItem<int>(
+  auto n2k_tx_ui_output = std::make_shared<StatusPageItem<int>>(
       "NMEA 2000 Transmitted Messages", 0, "NMEA 2000", 310);
 
   n2k_tx_counter.connect_to(n2k_tx_ui_output);
 
   /////////////////////////////////////////////////////////////////////
-  // Initialize the OLED display
+  // OLED display
 
-  InfoDisplay* display = new InfoDisplay(&Wire);
-  apparent_wind_data->speed.connect_to(
+  auto display = std::make_shared<InfoDisplay>(&Wire);
+  wind_parser->apparent_wind_speed_.connect_to(
       &(display->apparent_wind_speed_consumer));
-  apparent_wind_data->angle.connect_to(
+  wind_parser->apparent_wind_angle_.connect_to(
       &(display->apparent_wind_angle_consumer));
 
   /////////////////////////////////////////////////////////////////////
   // LED: blink off briefly on each wind speed update
 
-  apparent_wind_data->speed.connect_to(
-      new LambdaConsumer<float>([](float) {
+  wind_parser->apparent_wind_speed_.connect_to(
+      std::make_shared<LambdaConsumer<float>>([](float) {
         led_off_until = millis() + 50;
       }));
 
-  // LED animation + main loop
   event_loop()->onRepeat(10, []() {
     if (millis() < led_off_until) {
       led->setPixelColor(0, 0);
@@ -247,8 +249,8 @@ void setup() {
   });
 
   while (true) {
-    event_loop()->tick();
+    loop();
   }
 }
 
-void loop() {}
+void loop() { event_loop()->tick(); }
