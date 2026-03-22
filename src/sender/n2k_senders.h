@@ -1,3 +1,11 @@
+// Converts apparent wind data to NMEA 2000 PGN 130306 (Wind Data).
+// Uses RepeatExpiring for wind_speed_ and wind_angle_: remembers the last
+// received values but expires them after 5s of no input. Expired values are
+// sent as N2kDoubleNA so the N2K bus always sees messages at the 100ms interval
+// required by the NMEA 2000 standard.
+// Also a ValueProducer: emits a (speed, angle) pair on each successful TX,
+// allowing downstream consumers (like the TX counter) to track activity.
+
 #ifndef WIND_INTERFACE_SRC_SENDER_N2K_SENDERS_H_
 #define WIND_INTERFACE_SRC_SENDER_N2K_SENDERS_H_
 

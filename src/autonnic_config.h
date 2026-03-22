@@ -1,3 +1,17 @@
+// Autonnic A5120 configuration classes.
+// Configuration is dual-stored: persisted to ESP32 filesystem (so values survive
+// reboots) AND sent to the Autonnic as proprietary NMEA 0183 commands to
+// synchronize the device state. This contrasts with the AIS interface where
+// config lives only in the transponder.
+//
+// The save() pattern: persist to flash first, then build the NMEA sentence,
+// send via UART, and wait for an ACK using SemaphoreValue with a timeout.
+// The onDelay(0) wrapper defers the UART write to the event loop to avoid
+// re-entrancy. WindOutputRepetitionRateConfig::save() is the exception: it
+// sends directly (no onDelay wrapper) and uses a 5s timeout instead of 1s,
+// because changing the repetition rate causes the Autonnic to pause output
+// briefly before ACKing.
+
 #ifndef WIND_INTERFACE_SRC_AUTONNIC_CONFIG_H_
 #define WIND_INTERFACE_SRC_AUTONNIC_CONFIG_H_
 

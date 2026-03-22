@@ -15,9 +15,6 @@ pio run -t upload
 
 # Monitor serial output
 pio device monitor
-
-# Run unit tests (native platform)
-pio test -e native
 ```
 
 ## Architecture
@@ -33,7 +30,7 @@ Autonnic A5120 (NMEA 0183, 4800 bit/s, GPIO 3 RX / GPIO 2 TX)
           → tNMEA2000_esp32 (TWAI, GPIO 4 TX / GPIO 5 RX)
         → Signal K output (via WiFi/WebSocket)
         → SSD1306 OLED display (hostname, IP, uptime, AWS, AWA)
-    → AutnnicA5120Parser (ACK responses for config commands)
+    → AutonnicPATCWIMWVParser (ACK responses for config commands)
 
 Web UI ←→ Autonnic config objects ←→ Autonnic A5120 (serial commands)
 ```

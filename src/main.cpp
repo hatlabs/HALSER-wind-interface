@@ -1,5 +1,8 @@
-// HALSER Wind Interface Firmware
-// Autonnic A5120 wind instrument to NMEA 2000 gateway
+// HALSER Wind Interface Firmware — application entry point.
+// Wires the data pipeline: Autonnic A5120 (NMEA 0183 over UART) → WIMWV
+// sentence parser → N2K wind data sender (PGN 130306) + Signal K + OLED.
+// Config objects (reference angle, damping, repetition rate) are dual-stored:
+// ESP32 filesystem for persistence and Autonnic serial commands for device sync.
 
 #include <NMEA2000_esp32.h>
 
