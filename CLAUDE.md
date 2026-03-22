@@ -59,6 +59,5 @@ Autonnic A5120 (NMEA 0183, 4800 bit/s, GPIO 3 RX / GPIO 2 TX)
 - SensESP/NMEA0183 — NMEA 0183 sentence parsing
 - NMEA2000-library — NMEA 2000 message handling
 - NMEA2000_twai — ESP32 TWAI (CAN) driver
-- Adafruit NeoPixel — RGB LED control
 - Adafruit SSD1306 — OLED display
 - elapsedMillis — Timing utilities
