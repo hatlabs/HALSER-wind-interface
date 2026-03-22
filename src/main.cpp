@@ -1,7 +1,6 @@
 // HALSER Wind Interface Firmware
 // Autonnic A5120 wind instrument to NMEA 2000 gateway
 
-#include <Adafruit_NeoPixel.h>
 #include <NMEA2000_esp32.h>
 
 #include <memory>
@@ -33,11 +32,7 @@ constexpr gpio_num_t kCANTxPin = GPIO_NUM_4;
 constexpr gpio_num_t kCANRxPin = GPIO_NUM_5;
 constexpr int kI2CSDAPin = 6;
 constexpr int kI2CSCLPin = 7;
-constexpr int kRGBLEDPin = 8;
 constexpr int kButtonPin = 9;
-
-static Adafruit_NeoPixel* led = nullptr;
-static unsigned long led_off_until = 0;
 
 ObservableValue<int> n2k_rx_counter = 0;
 ObservableValue<int> n2k_tx_counter = 0;
@@ -61,11 +56,6 @@ void setup() {
                     ->set_button_pin(kButtonPin)
                     ->enable_ota("thisisfine")
                     ->get_app();
-
-  // RGB LED for activity indication
-  led = new Adafruit_NeoPixel(1, kRGBLEDPin, NEO_GRB + NEO_KHZ800);
-  led->begin();
-  led->setBrightness(30);
 
   // NMEA 0183 I/O task
   auto nmea0183_io_task = std::make_shared<NMEA0183IOTask>(&Serial1);
@@ -229,24 +219,6 @@ void setup() {
       &(display->apparent_wind_speed_consumer));
   wind_parser->apparent_wind_angle_.connect_to(
       &(display->apparent_wind_angle_consumer));
-
-  /////////////////////////////////////////////////////////////////////
-  // LED: blink off briefly on each wind speed update
-
-  wind_parser->apparent_wind_speed_.connect_to(
-      std::make_shared<LambdaConsumer<float>>([](float) {
-        led_off_until = millis() + 50;
-      }));
-
-  event_loop()->onRepeat(10, []() {
-    if (millis() < led_off_until) {
-      led->setPixelColor(0, 0);
-    } else {
-      uint16_t hue = (uint16_t)((millis() % 1000) * 65536UL / 1000);
-      led->setPixelColor(0, led->ColorHSV(hue));
-    }
-    led->show();
-  });
 
   while (true) {
     loop();
