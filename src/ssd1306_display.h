@@ -26,6 +26,8 @@ class InfoDisplay {
     }
 
     sensesp::event_loop()->onDelay(50, [this]() {
+      // rotation=2 compensates for the HALSER sandwich board mounting
+      // orientation (display is upside down relative to default)
       display_->setRotation(2);
       display_->clearDisplay();
       display_->setTextSize(1);

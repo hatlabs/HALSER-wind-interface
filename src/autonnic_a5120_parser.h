@@ -1,3 +1,7 @@
+// Parses proprietary ACK responses ($PATC,WIMWV,ACK) from the Autonnic A5120
+// wind instrument. ignore_checksum(true) because the Autonnic does not include
+// NMEA checksums on its responses.
+
 #ifndef WIND_INTERFACE_SRC_AUTONNIC_A5120_PARSER_H_
 #define WIND_INTERFACE_SRC_AUTONNIC_A5120_PARSER_H_
 
