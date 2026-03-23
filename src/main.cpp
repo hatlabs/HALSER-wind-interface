@@ -72,8 +72,13 @@ void setup() {
   auto autonnic_response_parser =
       std::make_shared<AutonnicPATCWIMWVParser>(&(nmea0183_io_task->parser_));
 
-  auto reference_angle_config = std::make_shared<ReferenceAngleConfig>(
+  // Autonnic configuration parameters — each is an AutonnicFloatConfig
+  // parameterized with a sentence builder, JSON key, and schema string.
+
+  auto reference_angle_config = std::make_shared<AutonnicFloatConfig>(
       nmea0183_io_task.get(), 0, autonnic_response_parser.get(),
+      AutonnicReferenceAngleSentence, "offset",
+      R"({"type":"object","properties":{"offset":{"title":"Offset","type":"number","displayMultiplier":0.017453292519943295,"displayOffset":0}}})",
       "/Wind/Reference Angle");
 
   ConfigItem(reference_angle_config)
@@ -84,10 +89,11 @@ void setup() {
           "straight ahead.")
       ->set_sort_order(300);
 
-  auto wind_direction_damping_config =
-      std::make_shared<WindDirectionDampingConfig>(
-          nmea0183_io_task.get(), 50.0, autonnic_response_parser.get(),
-          "/Wind/Direction Damping");
+  auto wind_direction_damping_config = std::make_shared<AutonnicFloatConfig>(
+      nmea0183_io_task.get(), 50.0, autonnic_response_parser.get(),
+      AutonnicWindDirectionDampingSentence, "damping_factor",
+      R"({"type":"object","properties":{"damping_factor":{"title":"Damping Factor","type":"number"}}})",
+      "/Wind/Direction Damping");
 
   ConfigItem(wind_direction_damping_config)
       ->set_title("Wind Direction Damping")
@@ -96,8 +102,10 @@ void setup() {
           "50.0.")
       ->set_sort_order(400);
 
-  auto wind_speed_damping_config = std::make_shared<WindSpeedDampingConfig>(
+  auto wind_speed_damping_config = std::make_shared<AutonnicFloatConfig>(
       nmea0183_io_task.get(), 50.0, autonnic_response_parser.get(),
+      AutonnicWindSpeedDampingSentence, "damping_factor",
+      R"({"type":"object","properties":{"damping_factor":{"title":"Damping Factor","type":"number"}}})",
       "/Wind/Speed Damping");
 
   ConfigItem(wind_speed_damping_config)
