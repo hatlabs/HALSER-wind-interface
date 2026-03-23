@@ -41,6 +41,12 @@ This firmware serves as both a ready-to-use application and a reference example 
 
 The Autonnic A5120 communicates via NMEA 0183 at 4800 bit/s (8N1).
 
+## Hardware Connection
+
+The A5120 uses RS-232 levels for its TX output (data to HALSER) and NMEA 0183 levels for its RX input (configuration commands from HALSER). Set the HALSER RX jumper to **R** (RS-232 mode). HALSER TX is connected to the NMEA 0183 TX output.
+
+Use a 5-pin SP13 connector to route the masthead cable into the HALSER enclosure.
+
 ## Usage
 
 ### Initial Setup
