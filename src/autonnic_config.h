@@ -1,7 +1,8 @@
 // Autonnic A5120 configuration classes.
-// Configuration is dual-stored: persisted to ESP32 filesystem (so values survive
-// reboots) AND sent to the Autonnic as proprietary NMEA 0183 commands to
-// synchronize the device state. This contrasts with the AIS interface where
+//
+// Configuration is dual-stored: persisted to ESP32 filesystem (so values
+// survive reboots) AND sent to the Autonnic as proprietary NMEA 0183 commands
+// to synchronize the device state. This contrasts with the AIS interface where
 // config lives only in the transponder.
 //
 // The save() pattern: persist to flash first, then build the NMEA sentence,
@@ -11,6 +12,13 @@
 // sends directly (no onDelay wrapper) and uses a 5s timeout instead of 1s,
 // because changing the repetition rate causes the Autonnic to pause output
 // briefly before ACKing.
+//
+// AutonnicFloatConfig is a reusable base for any Autonnic config parameter
+// that stores a single float. Each instance is parameterized with:
+//   - a sentence builder function (constructs the proprietary NMEA sentence)
+//   - a JSON key (for web UI serialization)
+//   - a JSON schema string (for web UI form rendering)
+// See main.cpp for usage examples.
 
 #ifndef WIND_INTERFACE_SRC_AUTONNIC_CONFIG_H_
 #define WIND_INTERFACE_SRC_AUTONNIC_CONFIG_H_
@@ -31,63 +39,87 @@
 
 namespace wind_interface {
 
-String AutonnicReferenceAngleSentence(const float& offset) {
-  // Example sentence: $PATC,IIMWV,AHD,x.x
+// --- Sentence builders ---------------------------------------------------
+// Each function constructs a proprietary Autonnic NMEA 0183 command sentence.
+// These sentences intentionally omit checksums because the Autonnic A5120
+// does not use them.
+
+inline String AutonnicReferenceAngleSentence(const float& offset) {
+  // $PATC,IIMWV,AHD,<degrees>
   float offset_degrees = offset * 180 / M_PI;
   char buf[100];
   snprintf(buf, sizeof(buf), "$PATC,IIMWV,AHD,%0.1f", offset_degrees);
   return buf;
 }
 
-String AutonnicWindDirectionDampingSentence(const float& damping_factor) {
-  // Example sentence: $PATC,IIMWV,DWD,x.x
+inline String AutonnicWindDirectionDampingSentence(const float& damping_factor) {
+  // $PATC,IIMWV,DWD,<factor>
   char buf[100];
   snprintf(buf, sizeof(buf), "$PATC,IIMWV,DWD,%0.1f", damping_factor);
   return buf;
 }
 
-String AutonnicWindSpeedDampingSentence(const float& damping_factor) {
-  // Example sentence: $PATC,IIMWV,DSP,x.x
+inline String AutonnicWindSpeedDampingSentence(const float& damping_factor) {
+  // $PATC,IIMWV,DSP,<factor>
   char buf[100];
   snprintf(buf, sizeof(buf), "$PATC,IIMWV,DSP,%0.1f", damping_factor);
   return buf;
 }
 
-String AutonnicMessageRepetitionRateSentence(const int& repetition_rate) {
-  // Example sentence: $PATC,IIMWV,TXP,xxxx
+inline String AutonnicMessageRepetitionRateSentence(const int& repetition_rate) {
+  // $PATC,IIMWV,TXP,<milliseconds>
   char buf[100];
   snprintf(buf, sizeof(buf), "$PATC,IIMWV,TXP,%d", repetition_rate);
   return buf;
 }
 
-class ReferenceAngleConfig : public sensesp::FileSystemSaveable,
-                             virtual public sensesp::Serializable {
+// --- Reusable single-float config ----------------------------------------
+// Covers any Autonnic parameter that is a single float value with the
+// standard save() flow: persist → build sentence → send via event loop → wait
+// for ACK. Parameterized at construction time so new float parameters can be
+// added without writing another class.
+
+/// Function type for building a proprietary NMEA sentence from a float value.
+using SentenceBuilder = String (*)(const float&);
+
+class AutonnicFloatConfig : public sensesp::FileSystemSaveable,
+                            virtual public sensesp::Serializable {
  public:
-  ReferenceAngleConfig(sensesp::nmea0183::NMEA0183IOTask* nmea_io_task,
-                       float offset, AutonnicPATCWIMWVParser* parser,
-                       String config_path = "")
+  /// @param nmea_io_task  NMEA 0183 I/O task used to send sentences
+  /// @param default_value Default parameter value (used if no saved config)
+  /// @param response_parser  Parser that emits on ACK from the Autonnic
+  /// @param sentence_builder Function that constructs the NMEA command sentence
+  /// @param json_key      JSON property name for web UI serialization
+  /// @param config_schema JSON schema string for web UI form rendering
+  /// @param config_path   SensESP filesystem path for persistent storage
+  AutonnicFloatConfig(sensesp::nmea0183::NMEA0183IOTask* nmea_io_task,
+                      float default_value,
+                      AutonnicPATCWIMWVParser* response_parser,
+                      SentenceBuilder sentence_builder,
+                      const char* json_key, const char* config_schema,
+                      String config_path = "")
       : sensesp::FileSystemSaveable(config_path),
         sensesp::Serializable(),
         nmea_io_task_{nmea_io_task},
-        offset_{offset},
-        response_parser_{parser} {
+        value_{default_value},
+        response_parser_{response_parser},
+        sentence_builder_{sentence_builder},
+        json_key_{json_key},
+        config_schema_{config_schema} {
     load();
     response_parser_->connect_to(&response_semaphore_);
   }
 
   inline virtual bool to_json(JsonObject& doc) override {
-    doc["offset"] = offset_;
+    doc[json_key_] = value_;
     return true;
   }
 
   inline virtual bool from_json(const JsonObject& config) override {
-    String expected_keys[] = {"offset"};
-    for (auto& key : expected_keys) {
-      if (!config[key].is<JsonVariant>()) {
-        return false;
-      }
+    if (!config[json_key_].is<JsonVariant>()) {
+      return false;
     }
-    offset_ = config["offset"];
+    value_ = config[json_key_];
     return true;
   }
 
@@ -97,10 +129,11 @@ class ReferenceAngleConfig : public sensesp::FileSystemSaveable,
 
   inline virtual bool save() override {
     this->FileSystemSaveable::save();
-    ESP_LOGD("ReferenceAngleConfig", "Sending command: %f", offset_);
-    String sentence = AutonnicReferenceAngleSentence(offset_);
-    ESP_LOGD("ReferenceAngleConfig", "Sending sentence: %s", sentence.c_str());
+    String sentence = sentence_builder_(value_);
+    ESP_LOGD("AutonnicFloatConfig", "Sending sentence: %s", sentence.c_str());
     response_semaphore_.clear();
+    // Defer UART write to the event loop to avoid re-entrancy when save()
+    // is called from within an event handler.
     sensesp::event_loop()->onDelay(
         0, [this, sentence]() { nmea_io_task_->set(sentence); });
     if (!response_semaphore_.take(1000)) {
@@ -109,154 +142,20 @@ class ReferenceAngleConfig : public sensesp::FileSystemSaveable,
     return true;
   }
 
- protected:
-  sensesp::nmea0183::NMEA0183IOTask* nmea_io_task_;
-  float offset_;  // Offset in radians
-  AutonnicPATCWIMWVParser* response_parser_;
-  sensesp::SemaphoreValue<bool> response_semaphore_;
-};
-
-inline const String ConfigSchema(const ReferenceAngleConfig& obj) {
-  const char schema[] = R"({
-      "type": "object",
-      "properties": {
-        "offset": { "title": "Offset", "type": "number", "displayMultiplier": 0.017453292519943295, "displayOffset": 0 }
-      }
-    })";
-  return schema;
-}
-
-class WindDirectionDampingConfig : public sensesp::FileSystemSaveable,
-                                   virtual public sensesp::Serializable {
- public:
-  WindDirectionDampingConfig(sensesp::nmea0183::NMEA0183IOTask* nmea_io_task,
-                             float damping_factor,
-                             AutonnicPATCWIMWVParser* response_parser,
-                             String config_path = "")
-      : sensesp::FileSystemSaveable(config_path),
-        sensesp::Serializable(),
-        nmea_io_task_{nmea_io_task},
-        damping_factor_{damping_factor},
-        response_parser_{response_parser} {
-    load();
-    response_parser_->connect_to(&response_semaphore_);
-  }
-
-  inline virtual bool to_json(JsonObject& doc) override {
-    doc["damping_factor"] = damping_factor_;
-    return true;
-  }
-
-  inline virtual bool from_json(const JsonObject& config) override {
-    String expected_keys[] = {"damping_factor"};
-    for (auto& key : expected_keys) {
-      if (!config[key].is<JsonVariant>()) {
-        return false;
-      }
-    }
-    damping_factor_ = config["damping_factor"];
-    return true;
-  }
-
-  inline virtual bool save() override {
-    FileSystemSaveable::save();
-    ESP_LOGD("WindDirectionDampingConfig", "Sending command: %f",
-             damping_factor_);
-    String sentence = AutonnicWindDirectionDampingSentence(damping_factor_);
-    ESP_LOGD("WindDirectionDampingConfig", "Sending sentence: %s",
-             sentence.c_str());
-    response_semaphore_.clear();
-    sensesp::event_loop()->onDelay(
-        0, [this, sentence]() { nmea_io_task_->set(sentence); });
-    if (!response_semaphore_.take(1000)) {
-      return false;
-    }
-
-    return true;
-  }
+  const char* get_config_schema() const { return config_schema_; }
 
  protected:
   sensesp::nmea0183::NMEA0183IOTask* nmea_io_task_;
-  float damping_factor_;
+  float value_;
   AutonnicPATCWIMWVParser* response_parser_;
+  SentenceBuilder sentence_builder_;
+  const char* json_key_;
+  const char* config_schema_;
   sensesp::SemaphoreValue<bool> response_semaphore_;
 };
 
-const String ConfigSchema(const WindDirectionDampingConfig& obj) {
-  const char schema[] = R"({
-      "type": "object",
-      "properties": {
-        "damping_factor": { "title": "Damping Factor", "type": "number" }
-      }
-    })";
-  return schema;
-}
-
-class WindSpeedDampingConfig : public sensesp::FileSystemSaveable,
-                               virtual public sensesp::Serializable {
- public:
-  WindSpeedDampingConfig(sensesp::nmea0183::NMEA0183IOTask* nmea_io_task,
-                         float damping_factor, AutonnicPATCWIMWVParser* parser,
-                         String config_path = "")
-      : sensesp::FileSystemSaveable(config_path),
-        sensesp::Serializable(),
-        nmea_io_task_{nmea_io_task},
-        damping_factor_{damping_factor},
-        response_parser_{parser} {
-    load();
-    response_parser_->connect_to(&response_semaphore_);
-  }
-
-  inline virtual bool to_json(JsonObject& doc) override {
-    doc["damping_factor"] = damping_factor_;
-    return true;
-  }
-
-  inline virtual bool from_json(const JsonObject& config) override {
-    String expected_keys[] = {"damping_factor"};
-    for (auto& key : expected_keys) {
-      if (!config[key].is<JsonVariant>()) {
-        return false;
-      }
-    }
-    damping_factor_ = config["damping_factor"];
-    return true;
-  }
-
-  inline virtual bool load() override {
-    return FileSystemSaveable::load();
-  }
-
-  inline virtual bool save() override {
-    FileSystemSaveable::save();
-    ESP_LOGD("WindSpeedDampingConfig", "Sending command: %f", damping_factor_);
-    String sentence = AutonnicWindSpeedDampingSentence(damping_factor_);
-    ESP_LOGD("WindSpeedDampingConfig", "Sending sentence: %s",
-             sentence.c_str());
-    response_semaphore_.clear();
-    sensesp::event_loop()->onDelay(
-        0, [this, sentence]() { nmea_io_task_->set(sentence); });
-    if (!response_semaphore_.take(1000)) {
-      return false;
-    }
-    return true;
-  }
-
- protected:
-  sensesp::nmea0183::NMEA0183IOTask* nmea_io_task_;
-  float damping_factor_;
-  AutonnicPATCWIMWVParser* response_parser_;
-  sensesp::SemaphoreValue<bool> response_semaphore_;
-};
-
-inline const String ConfigSchema(const WindSpeedDampingConfig& obj) {
-  const char schema[] = R"({
-      "type": "object",
-      "properties": {
-        "damping_factor": { "title": "Damping Factor", "type": "number" }
-      }
-    })";
-  return schema;
+inline const String ConfigSchema(const AutonnicFloatConfig& obj) {
+  return obj.get_config_schema();
 }
 
 class WindOutputRepetitionRateConfig : public sensesp::FileSystemSaveable,
