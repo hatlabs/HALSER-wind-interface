@@ -130,8 +130,10 @@ void setup() {
 
   tNMEA2000* nmea2000 = new tNMEA2000_esp32(kCANTxPin, kCANRxPin);
 
-  nmea2000->SetN2kCANSendFrameBufSize(250);
-  nmea2000->SetN2kCANReceiveFrameBufSize(250);
+  // 64-frame CAN buffers: enough to absorb a fast-packet burst (up to 32 frames
+  // each) while keeping the static footprint modest on the memory-constrained C3.
+  nmea2000->SetN2kCANSendFrameBufSize(64);
+  nmea2000->SetN2kCANReceiveFrameBufSize(64);
 
   nmea2000->SetProductInformation(
       "20240601",  // Manufacturer's Model serial code (max 32 chars)
@@ -221,6 +223,15 @@ void setup() {
       "NMEA 2000 Transmitted Messages", 0, "NMEA 2000", 310);
 
   n2k_tx_counter.connect_to(n2k_tx_ui_output);
+
+  // Largest contiguous free block. This, not total free memory, gates large
+  // allocations like the ~40 KB TLS handshake, so surface it on the status page
+  // to make heap fragmentation visible.
+  auto largest_block_status = std::make_shared<StatusPageItem<int>>(
+      "Largest free block (bytes)", 0, "System", 250);
+  event_loop()->onRepeat(2000, [largest_block_status]() {
+    largest_block_status->set(static_cast<int>(ESP.getMaxAllocHeap()));
+  });
 
   /////////////////////////////////////////////////////////////////////
   // OLED display
