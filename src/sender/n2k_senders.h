@@ -3,8 +3,10 @@
 // received values but expires them after 5s of no input. Expired values are
 // sent as N2kDoubleNA so the N2K bus always sees messages at the 100ms interval
 // required by the NMEA 2000 standard.
-// Also a ValueProducer: emits a (speed, angle) pair on each successful TX,
-// allowing downstream consumers (like the TX counter) to track activity.
+//
+// The bus handle is a CountingNMEA2000* (not tNMEA2000*) so every SendMsg is
+// tallied by the bus itself -- the transmit count lives there, covering all
+// senders, not just this one.
 
 #ifndef WIND_INTERFACE_SRC_SENDER_N2K_SENDERS_H_
 #define WIND_INTERFACE_SRC_SENDER_N2K_SENDERS_H_
@@ -12,6 +14,9 @@
 #include <N2kMessages.h>
 #include <NMEA2000.h>
 
+#include "counting_nmea2000.h"
+
+#include <cmath>
 #include <tuple>
 
 #include "sensesp/system/expiring_value.h"
@@ -45,12 +50,10 @@ class N2kSender : public sensesp::FileSystemSaveable,
   reactesp::RepeatReaction* sender_reaction_ = nullptr;
 };
 
-class N2kWindDataSender
-    : public N2kSender,
-      public sensesp::ValueProducer<std::pair<double, double>> {
+class N2kWindDataSender : public N2kSender {
  public:
   N2kWindDataSender(String config_path, tN2kWindReference wind_reference,
-                    tNMEA2000* nmea2000, bool enable = true)
+                    CountingNMEA2000* nmea2000, bool enable = true)
       : N2kSender{config_path},
         wind_reference_{wind_reference},
         nmea2000_{nmea2000},
@@ -67,12 +70,15 @@ class N2kWindDataSender
       this->sender_reaction_ =
           sensesp::event_loop()->onRepeat(repeat_interval_, [this]() {
             tN2kMsg N2kMsg;
-            SetN2kWindSpeed(N2kMsg, 255, this->wind_speed_.get(),
-                            this->wind_angle_.get(), this->wind_reference_);
+            // Guard NaN -> N2kDoubleNA so an invalid channel broadcasts "no data"
+            // rather than a fabricated value (RepeatExpiring only NA's on time
+            // expiry, not on a fresh NaN).
+            double spd = this->wind_speed_.get();
+            double ang = this->wind_angle_.get();
+            SetN2kWindSpeed(N2kMsg, 255, std::isnan(spd) ? N2kDoubleNA : spd,
+                            std::isnan(ang) ? N2kDoubleNA : ang,
+                            this->wind_reference_);
             this->nmea2000_->SendMsg(N2kMsg);
-            std::pair<double, double> wind_data = std::make_pair(
-                this->wind_speed_.get(), this->wind_angle_.get());
-            this->emit(wind_data);
           });
     }
   }
@@ -86,7 +92,7 @@ class N2kWindDataSender
   sensesp::RepeatExpiring<double> wind_speed_{repeat_interval_, expiry_};
 
  protected:
-  tNMEA2000* nmea2000_;
+  CountingNMEA2000* nmea2000_;
   tN2kWindReference wind_reference_;
 };
 
