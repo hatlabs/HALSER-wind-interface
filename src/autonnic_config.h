@@ -33,10 +33,8 @@
 #define WIND_INTERFACE_SRC_AUTONNIC_CONFIG_H_
 
 #include <elapsedMillis.h>
-#include <sensesp/transforms/zip.h>
 
 #include <cmath>
-#include <tuple>
 
 #include "ReactESP.h"
 #include "autonnic_a5120_parser.h"
